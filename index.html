@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Abfahrten</title>
+<style>
+body{background:#000;color:#fff;font-family:-apple-system,Helvetica,sans-serif;margin:0;padding:24px}
+.stop{font-size:30px;font-weight:bold;margin:28px 0 8px}
+.row{display:flex;align-items:baseline;padding:8px 0;border-bottom:1px solid #222}
+.line{font-size:34px;font-weight:bold;width:100px}
+.dir{flex:1;color:#aaa;font-size:26px;padding:0 12px}
+.min{font-size:56px;font-weight:bold;text-align:right}
+.min small{font-size:30px;font-weight:normal}
+.ok{color:#4cd964}.hurry{color:#ff9f0a}.late{color:#666}
+.note{color:#ff9f0a;font-size:16px}
+.upd{color:#666;font-size:16px;margin-top:30px;text-align:center}
+</style>
+</head>
+<body>
+<div id="out">lädt …</div>
+<script>
+// === HIER ANPASSEN ===
+const STOPS = [
+  { id:'900013103', name:'U Prinzenstraße',   lines:['U1','U3'], walk:6 },
+  { id:'900016203', name:'Klinikum Am Urban', lines:['M41'],     walk:3 }
+];
+// =====================
+const API = 'https://v6.vbb.transport.rest';
+const cache = {};
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function cls(m, walk){ return m < walk ? 'late' : (m < walk + 3 ? 'hurry' : 'ok'); }
+
+function render(s, deps){
+  const now = Date.now(), groups = new Map();
+  for (const d of deps){
+    if (!d.line || !d.when || d.cancelled || !s.lines.includes(d.line.name)) continue;
+    const m = Math.floor((new Date(d.when) - now) / 60000);
+    if (m < 0) continue;
+    const key = d.line.name + '|' + d.direction;
+    if (!groups.has(key)) groups.set(key, { line:d.line.name, dir:d.direction, m:[] });
+    if (groups.get(key).m.length < 2) groups.get(key).m.push(m);
+  }
+  let html = '<div class="stop">' + esc(s.name) + '</div>';
+  if (!groups.size) return html + '<div class="dir">Keine Abfahrt in den nächsten 40 Min.</div>';
+  for (const g of groups.values()){
+    const mins = g.m.map(m => '<span class="' + cls(m, s.walk) + '">' + (m === 0 ? 'jetzt' : m) + '</span>').join(' <small>·</small> ');
+    html += '<div class="row"><span class="line">' + esc(g.line) + '</span><span class="dir">' +
+            esc(g.dir || '') + '</span><span class="min">' + mins + '</span></div>';
+  }
+  return html;
+}
+
+async function loadStop(s){
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10000);
+  try {
+    const r = await fetch(API + '/stops/' + s.id + '/departures?duration=40&results=40&remarks=false&language=de', { signal: ctrl.signal });
+    if (!r.ok) throw new Error(r.status);
+    const data = await r.json();
+    cache[s.id] = render(s, data.departures || data);
+    return cache[s.id];
+  } catch (e) {
+    return (cache[s.id] || '<div class="stop">' + esc(s.name) + '</div>') +
+           '<div class="note">Keine Verbindung – letzte bekannte Werte</div>';
+  } finally { clearTimeout(timer); }
+}
+
+async function refresh(){
+  const parts = await Promise.all(STOPS.map(loadStop));
+  const t = new Date().toLocaleTimeString('de-DE', { hour:'2-digit', minute:'2-digit' });
+  document.getElementById('out').innerHTML = parts.join('') + '<div class="upd">Stand ' + t + '</div>';
+}
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>
