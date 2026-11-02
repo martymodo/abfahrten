@@ -27,6 +27,10 @@ body{background:#000;color:#fff;font-family:-apple-system,Helvetica,sans-serif;m
 <body>
 <div id="out">lädt …</div>
 <script>
+window.onerror = function (msg) {
+  document.getElementById('out').textContent = 'Skriptfehler: ' + msg;
+};
+
 // === HIER ANPASSEN ===
 const STOPS = [
   { id:'900013103', name:'U Prinzenstraße',   lines:['U1','U3'], walk:5, split:true },
@@ -39,6 +43,58 @@ let raw = {};
 try { raw = JSON.parse(localStorage.getItem('raw') || '{}'); } catch (e) {}
 const errors = {};
 let busy = false;
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const cls = (m, walk) => m < walk ? 'late' : (m < walk + 3 ? 'hurry' : 'ok');
+const fmtMins = (arr, walk) => arr.map(m => '<span class="' + cls(m, walk) + '">' + (m === 0 ? 'jetzt' : m) + '</span>').join(' <small>·</small> ');
+
+function collect(s, deps){
+  const now = Date.now(), list = [];
+  for (const d of deps){
+    if (!d.line || !d.when || d.cancelled || !s.lines.includes(d.line.name)) continue;
+    const m = Math.floor((new Date(d.when) - now) / 60000);
+    if (m >= 0) list.push({ line:d.line.name, dir:d.direction || '', m });
+  }
+  return list;
+}
+
+// Prinzenstraße: nach Richtung aufgeteilt, Linien nebeneinander
+function renderSplit(s, deps){
+  const list = collect(s, deps);
+  const sections = [
+    { label:'Richtung Warschauer',   test: d => /warschauer/i.test(d) },
+    { label:'Richtung Gleisdreieck', test: d => !/warschauer/i.test(d) }
+  ];
+  let html = '<div class="stop">' + esc(s.name) + '</div>';
+  for (const sec of sections){
+    html += '<div class="sub">' + sec.label + '</div><div class="cols">';
+    for (const line of s.lines){
+      const items = list.filter(x => x.line === line && sec.test(x.dir)).slice(0, 2);
+      html += '<div class="cell"><div class="line">' + line + '</div>' +
+        '<div class="to">' + (items[0] ? esc(items[0].dir) : '') + '</div>' +
+        '<div class="min">' + (items.length ? fmtMins(items.map(x => x.m), s.walk) : '<span class="none">–</span>') + '</div></div>';
+    }
+    html += '</div>';
+  }
+  return html;
+}
+
+// Bus: eine Zeile pro Linie und Richtung
+function renderRows(s, deps){
+  const groups = new Map();
+  for (const x of collect(s, deps)){
+    const key = x.line + '|' + x.dir;
+    if (!groups.has(key)) groups.set(key, { line:x.line, dir:x.dir, m:[] });
+    if (groups.get(key).m.length < 2) groups.get(key).m.push(x.m);
+  }
+  let html = '<div class="stop">' + esc(s.name) + '</div>';
+  if (!groups.size) return html + '<div class="dir">Keine Abfahrt in den nächsten 40 Min.</div>';
+  for (const g of groups.values()){
+    html += '<div class="row"><span class="line">' + esc(g.line) + '</span><span class="dir">' +
+            esc(g.dir) + '</span><span class="min">' + fmtMins(g.m, s.walk) + '</span></div>';
+  }
+  return html;
+}
 
 async function fetchDeps(s){
   const errs = [];
