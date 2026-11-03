@@ -21,7 +21,8 @@ body{background:#000;color:#fff;font-family:-apple-system,Helvetica,sans-serif;m
 .min small{font-size:30px;font-weight:normal}
 .ok{color:#4cd964}.hurry{color:#ff9f0a}.late{color:#666}.none{color:#444}
 .note{color:#ff9f0a;font-size:16px}
-.upd{color:#666;font-size:16px;margin-top:30px;text-align:center}
+.upd{color:#666;font-size:16px;margin-top:18px;text-align:center}
+.upd a{color:#888}
 </style>
 </head>
 <body>
@@ -32,122 +33,61 @@ window.onerror = function (msg) {
 };
 
 // === HIER ANPASSEN ===
+const KONTAKT = 'DEINE@EMAIL.DE';   // Transitous verlangt Kontaktangaben auf der Seite
 const STOPS = [
-  { id:'900013103', name:'U Prinzenstraße',   lines:['U1','U3'], walk:5, split:true },
-  { id:'900016203', name:'Klinikum Am Urban', lines:['M41'],     walk:3 }
+  { id:'900013103', tid:'de-VBB_de:11000:900013103',     name:'U Prinzenstraße',   lines:['U1','U3'], walk:5, split:true },
+  { id:'900016203', tid:'de-VBB_de:11000:900016203::1',  name:'Klinikum Am Urban', lines:['M41'],     walk:3 }
 ];
 // =====================
-const APIS = ['https://v6.vbb.transport.rest', 'https://v6.bvg.transport.rest'];
 
+const FORCE_T = new URLSearchParams(location.search).get('src') === 'transitous';  // Test: Adresse + ?src=transitous
 let raw = {};
-try { raw = JSON.parse(localStorage.getItem('raw') || '{}'); } catch (e) {}
+try { raw = JSON.parse(localStorage.getItem('raw2') || '{}'); } catch (e) {}
 const errors = {};
-let busy = false;
+let busy = false, pref = 0, cycles = 0;
 
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const cls = (m, walk) => m < walk ? 'late' : (m < walk + 3 ? 'hurry' : 'ok');
-const fmtMins = (arr, walk) => arr.map(m => '<span class="' + cls(m, walk) + '">' + (m === 0 ? 'jetzt' : m) + '</span>').join(' <small>·</small> ');
+const fmtMins = (arr, walk) => arr.map(x =>
+  '<span class="' + cls(x.m, walk) + '">' + (x.rt ? '' : '~') + (x.m === 0 ? 'jetzt' : x.m) + '</span>'
+).join(' <small>·</small> ');
+const hhmm = d => new Date(d).toLocaleTimeString('de-DE', { hour:'2-digit', minute:'2-digit' });
 
-function collect(s, deps){
-  const now = Date.now(), list = [];
-  for (const d of deps){
-    if (!d.line || !d.when || d.cancelled || !s.lines.includes(d.line.name)) continue;
-    const m = Math.floor((new Date(d.when) - now) / 60000);
-    if (m >= 0) list.push({ line:d.line.name, dir:d.direction || '', m });
-  }
-  return list;
-}
-
-// Prinzenstraße: nach Richtung aufgeteilt, Linien nebeneinander
-function renderSplit(s, deps){
-  const list = collect(s, deps);
-  const sections = [
-    { label:'Richtung Warschauer',   test: d => /warschauer/i.test(d) },
-    { label:'Richtung Gleisdreieck', test: d => !/warschauer/i.test(d) }
-  ];
-  let html = '<div class="stop">' + esc(s.name) + '</div>';
-  for (const sec of sections){
-    html += '<div class="sub">' + sec.label + '</div><div class="cols">';
-    for (const line of s.lines){
-      const items = list.filter(x => x.line === line && sec.test(x.dir)).slice(0, 2);
-      html += '<div class="cell"><div class="line">' + line + '</div>' +
-        '<div class="to">' + (items[0] ? esc(items[0].dir) : '') + '</div>' +
-        '<div class="min">' + (items.length ? fmtMins(items.map(x => x.m), s.walk) : '<span class="none">–</span>') + '</div></div>';
-    }
-    html += '</div>';
-  }
-  return html;
-}
-
-// Bus: eine Zeile pro Linie und Richtung
-function renderRows(s, deps){
-  const groups = new Map();
-  for (const x of collect(s, deps)){
-    const key = x.line + '|' + x.dir;
-    if (!groups.has(key)) groups.set(key, { line:x.line, dir:x.dir, m:[] });
-    if (groups.get(key).m.length < 2) groups.get(key).m.push(x.m);
-  }
-  let html = '<div class="stop">' + esc(s.name) + '</div>';
-  if (!groups.size) return html + '<div class="dir">Keine Abfahrt in den nächsten 40 Min.</div>';
-  for (const g of groups.values()){
-    html += '<div class="row"><span class="line">' + esc(g.line) + '</span><span class="dir">' +
-            esc(g.dir) + '</span><span class="min">' + fmtMins(g.m, s.walk) + '</span></div>';
-  }
-  return html;
-}
-
-async function fetchDeps(s){
-  const errs = [];
-  for (const base of APIS){
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 20000);
-    try {
-      const r = await fetch(base + '/stops/' + s.id + '/departures?duration=40&results=30&remarks=false&language=de', { signal: ctrl.signal });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const data = await r.json();
-      return data.departures || data;
-    } catch (e) {
-      errs.push(base.replace('https://', '') + ': ' + (e.name === 'AbortError' ? 'Zeitüberschreitung' : e.message));
-    } finally { clearTimeout(timer); }
-  }
-  throw new Error(errs.join(' | '));
-}
-
-async function updateStop(s){
+// ---------- Datenquellen ----------
+async function getJson(url, ms){
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
   try {
-    raw[s.id] = { deps: await fetchDeps(s), ts: Date.now() };
-    delete errors[s.id];
-    try { localStorage.setItem('raw', JSON.stringify(raw)); } catch (e) {}
-  } catch (e) { errors[s.id] = e.message; }
+    const r = await fetch(url, { signal: ctrl.signal });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return await r.json();
+  } finally { clearTimeout(timer); }
 }
 
-function hhmm(d){ return new Date(d).toLocaleTimeString('de-DE', { hour:'2-digit', minute:'2-digit' }); }
-
-function draw(){
-  let html = '';
-  for (const s of STOPS){
-    const c = raw[s.id];
-    html += c ? (s.split ? renderSplit(s, c.deps) : renderRows(s, c.deps))
-              : '<div class="stop">' + esc(s.name) + '</div>';
-    if (errors[s.id]) {
-      html += '<div class="note">Keine Verbindung' + (c ? ' – Daten von ' + hhmm(c.ts) : '') +
-              ' (' + esc(errors[s.id]) + ')</div>';
-    }
-  }
-  document.getElementById('out').innerHTML = html + '<div class="upd">Stand ' + hhmm(Date.now()) + '</div>';
+function normVbb(deps){
+  return deps.filter(d => d.line && d.when).map(d => ({
+    line: d.line.name, dir: d.direction || '', t: new Date(d.when).getTime(),
+    cancelled: !!d.cancelled, rt: d.delay != null
+  }));
 }
 
-async function refresh(){
-  if (busy) return;
-  busy = true;
-  try { await Promise.all(STOPS.map(updateStop)); } finally { busy = false; }
-  draw();
+function normTransitous(data){
+  return (data.stopTimes || []).map(x => {
+    const p = x.place || {};
+    return {
+      line: String(x.routeShortName || x.displayName || ''),
+      dir: x.headsign || '',
+      t: new Date(p.departure || p.scheduledDeparture || p.arrival).getTime(),
+      cancelled: !!(x.cancelled || x.tripCancelled || p.cancelled),
+      rt: !!x.realTime
+    };
+  }).filter(x => x.line && !isNaN(x.t));
 }
 
-draw();                        // gespeicherte Werte sofort zeigen
-refresh();
-setInterval(draw, 10000);      // Minuten neu berechnen
-setInterval(refresh, 30000);   // neue Daten holen
-</script>
-</body>
-</html>
+const SOURCES = [
+  { name:'VBB', load: async s => {
+      const d = await getJson('https://v6.vbb.transport.rest/stops/' + s.id + '/departures?duration=40&results=30&remarks=false&language=de', 6000);
+      return normVbb(d.departures || d);
+  }},
+  { name:'Transitous', load: async s =>
+      normTransitous(await getJson('https://api.transitous.org/api/v6/stoptimes?stopId=' +
