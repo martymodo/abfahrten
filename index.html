@@ -6,23 +6,38 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>Abfahrten</title>
 <style>
-body{background:#000;color:#fff;font-family:Helvetica,Arial,sans-serif;margin:0;padding:24px}
-.stop{font-size:30px;font-weight:bold;margin:28px 0 8px}
-.sub{font-size:24px;color:#aaa;margin:18px 0 6px}
-.cols{display:-webkit-box;display:-webkit-flex;display:flex;margin:0 -6px}
-.cell{-webkit-box-flex:1;-webkit-flex:1;flex:1;background:#111;border-radius:14px;padding:10px 14px;margin:0 6px;text-align:center}
-.cell .line{font-size:30px;font-weight:bold;width:auto}
-.cell .to{font-size:18px;color:#888;min-height:22px}
-.row{display:-webkit-box;display:-webkit-flex;display:flex;-webkit-box-align:baseline;-webkit-align-items:baseline;align-items:baseline;padding:8px 0;border-bottom:1px solid #222}
-.line{font-size:34px;font-weight:bold;width:100px}
-.dir{-webkit-box-flex:1;-webkit-flex:1;flex:1;color:#aaa;font-size:26px;padding:0 12px}
-.min{font-size:56px;font-weight:bold;text-align:right}
-.cell .min{text-align:center}
-.min small{font-size:30px;font-weight:normal}
-.ok{color:#4cd964}.hurry{color:#ff9f0a}.late{color:#666}.none{color:#444}
-.note{color:#ff9f0a;font-size:16px}
-.upd{color:#666;font-size:16px;margin-top:18px;text-align:center}
-.upd a{color:#888}
+body{background:#000;color:#fff;font-family:Helvetica,Arial,sans-serif;margin:0;padding:20px 24px}
+.flex{display:-webkit-box;display:-webkit-flex;display:flex;-webkit-box-align:center;-webkit-align-items:center;align-items:center}
+.grow{-webkit-box-flex:1;-webkit-flex:1;flex:1;min-width:0}
+.stop{font-size:22px;color:#777;text-transform:uppercase;letter-spacing:2px;margin:22px 0 10px}
+
+/* Kachel pro Richtung */
+.tile{background:#0b0b0b;border-radius:18px;border-left:12px solid #333;padding:14px 22px;margin-bottom:14px}
+.tile.ok{border-left-color:#4cd964}.tile.hurry{border-left-color:#ff9f0a}
+.tile .flex{height:160px}
+.head{font-size:38px;font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.then{font-size:24px;color:#999;margin-top:6px}
+.right{text-align:right;padding-left:16px;width:230px}
+.cap{font-size:22px;color:#888}
+.big{font-size:130px;font-weight:bold;line-height:1;letter-spacing:-3px}
+.big small{font-size:36px;font-weight:normal;letter-spacing:0;margin-left:4px}
+.go{font-size:62px;font-weight:bold;line-height:1.05}
+
+/* Bus: kompakte Zeilen */
+.row{padding:10px 0;border-bottom:1px solid #1a1a1a}
+.row .line{font-size:28px;font-weight:bold;width:80px}
+.row .dir{font-size:26px;color:#ccc}
+.row .then{font-size:20px;margin-top:2px}
+.row .num{font-size:48px;font-weight:bold;padding-left:12px;text-align:right}
+.row .num small{font-size:22px;font-weight:normal}
+
+.ok .big,.ok .go,.num.ok{color:#4cd964}
+.hurry .big,.hurry .go,.num.hurry{color:#ff9f0a}
+.none{color:#444}
+.stale{opacity:.45}
+.note{color:#ff9f0a;font-size:20px;margin:-4px 0 12px}
+.upd{color:#555;font-size:15px;margin-top:20px;text-align:center}
+.upd a{color:#666}
 </style>
 </head>
 <body>
@@ -35,9 +50,13 @@ window.onerror = function (msg, src, line) {
 
 // === HIER ANPASSEN ===
 var KONTAKT = 'DEINE@EMAIL.DE';   // Transitous verlangt Kontaktangaben auf der Seite
+var HURRY = 2;                     // bis zu so vielen Minuten Puffer: orange "jetzt los"
 var STOPS = [
-  { id:'900013103', tid:'de-VBB_de:11000:900013103',    name:'U Prinzenstraße',   lines:['U1','U3'], walk:5, split:true },
-  { id:'900016203', tid:'de-VBB_de:11000:900016203::1', name:'Klinikum Am Urban', lines:['M41'],     walk:3 }
+  { id:'900013103', tid:'de-VBB_de:11000:900013103', name:'U Prinzenstraße', lines:['U1','U3'], walk:5,
+    // U1 und U3 werden pro Richtung zusammengefasst: es zählt die nächste erreichbare Bahn
+    dirs:[ { label:'Warschauer Str.', match:/warschauer/i },
+           { label:'Gleisdreieck',    match:null } ] },        // null = alle übrigen Ziele
+  { id:'900016203', tid:'de-VBB_de:11000:900016203::1', name:'Klinikum Am Urban', lines:['M41'], walk:3 }
 ];
 // =====================
 
@@ -67,16 +86,6 @@ function parseIso(s) {
     t = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)).getTime();
   }
   return t;
-}
-
-function cls(m, walk) { return m < walk ? 'late' : (m < walk + 3 ? 'hurry' : 'ok'); }
-function fmtMins(arr, walk) {
-  var out = [];
-  for (var i = 0; i < arr.length; i++) {
-    var x = arr[i];
-    out.push('<span class="' + cls(x.m, walk) + '">' + (x.rt ? '' : '~') + (x.m === 0 ? 'jetzt' : x.m) + '</span>');
-  }
-  return out.join(' <small>·</small> ');
 }
 
 // ---------- Datenquellen ----------
@@ -159,6 +168,7 @@ function updateStop(s, cb) {
 }
 
 // ---------- Anzeige ----------
+// Nur Abfahrten, die man zu Fuß noch erreicht; "leave" = Minuten bis zum Losgehen
 function collect(s, deps) {
   var now = new Date().getTime(), list = [];
   for (var i = 0; i < deps.length; i++) {
@@ -166,73 +176,86 @@ function collect(s, deps) {
     var line = String(d.line).replace(/\s+/g, '');
     if (d.cancelled || !contains(s.lines, line)) continue;
     var m = Math.floor((d.t - now) / 60000);
-    if (m >= 0) list.push({ line:line, dir:d.dir, m:m, rt:d.rt });
+    if (m >= s.walk) list.push({ line:line, dir:d.dir, m:m, leave:m - s.walk, rt:d.rt });
   }
   list.sort(function (a, b) { return a.m - b.m; });
   return list;
 }
 
-// Prinzenstraße: nach Richtung aufgeteilt, Linien nebeneinander
-function renderSplit(s, deps) {
-  var list = collect(s, deps);
-  var sections = [
-    { label:'Richtung Warschauer',   east:true },
-    { label:'Richtung Gleisdreieck', east:false }
-  ];
-  var html = '<div class="stop">' + esc(s.name) + '</div>';
-  for (var j = 0; j < sections.length; j++) {
-    var sec = sections[j];
-    html += '<div class="sub">' + sec.label + '</div><div class="cols">';
-    for (var k = 0; k < s.lines.length; k++) {
-      var line = s.lines[k], items = [];
-      for (var i = 0; i < list.length && items.length < 2; i++) {
-        if (list[i].line === line && /warschauer/i.test(list[i].dir) === sec.east) items.push(list[i]);
-      }
-      html += '<div class="cell"><div class="line">' + line + '</div>' +
-        '<div class="to">' + (items[0] ? esc(items[0].dir) : '') + '</div>' +
-        '<div class="min">' + (items.length ? fmtMins(items, s.walk) : '<span class="none">–</span>') + '</div></div>';
+function state(leave) { return leave <= HURRY ? 'hurry' : 'ok'; }
+function mins(x) { return (x.rt ? '' : '~') + x.m; }
+
+// Große Zahl rechts: wann muss ich los?
+function bigLeave(x) {
+  if (x.leave <= 0) return '<div class="go">JETZT<br>LOS</div>';
+  return '<div class="cap">los in</div><div class="big">' + (x.rt ? '' : '~') + x.leave + '<small>min</small></div>';
+}
+
+// Prinzenstraße: eine Kachel pro Richtung, U1/U3 zusammen
+function renderDirs(s, deps) {
+  var list = collect(s, deps), html = '';
+  for (var j = 0; j < s.dirs.length; j++) {
+    var dir = s.dirs[j], items = [];
+    for (var i = 0; i < list.length && items.length < 3; i++) {
+      var east = s.dirs[0].match.test(list[i].dir);
+      if (dir.match ? dir.match.test(list[i].dir) : !east) items.push(list[i]);
     }
-    html += '</div>';
+    var x = items[0];
+    var left = '<div class="head">→ ' + esc(dir.label) + '</div>';
+    if (!x) {
+      html += '<div class="tile"><div class="flex"><div class="grow">' + left +
+              '<div class="then">keine Bahn in den nächsten 40 min</div></div>' +
+              '<div class="right"><div class="big none">–</div></div></div></div>';
+      continue;
+    }
+    var later = [];
+    for (var k = 1; k < items.length; k++) later.push(mins(items[k]));
+    left += '<div class="then">' + x.line + ' fährt in ' + mins(x) + ' min' +
+            (later.length ? ' · danach ' + later.join(', ') : '') + '</div>';
+    html += '<div class="tile ' + state(x.leave) + '"><div class="flex"><div class="grow">' + left +
+            '</div><div class="right">' + bigLeave(x) + '</div></div></div>';
   }
   return html;
 }
 
-// Bus: eine Zeile pro Linie und Richtung
+// Bus: eine kompakte Zeile pro Richtung
 function renderRows(s, deps) {
   var list = collect(s, deps), groups = {}, order = [];
   for (var i = 0; i < list.length; i++) {
     var x = list[i], key = x.line + '|' + x.dir;
     if (!groups[key]) { groups[key] = { line:x.line, dir:x.dir, items:[] }; order.push(key); }
-    if (groups[key].items.length < 2) groups[key].items.push(x);
+    if (groups[key].items.length < 3) groups[key].items.push(x);
   }
-  var html = '<div class="stop">' + esc(s.name) + '</div>';
-  if (!order.length) return html + '<div class="dir">Keine Abfahrt in den nächsten Minuten.</div>';
+  if (!order.length) return '<div class="row then">Keine erreichbare Abfahrt in den nächsten Minuten.</div>';
+  var html = '';
   for (var j = 0; j < order.length; j++) {
-    var g = groups[order[j]];
-    html += '<div class="row"><span class="line">' + esc(g.line) + '</span><span class="dir">' +
-            esc(g.dir) + '</span><span class="min">' + fmtMins(g.items, s.walk) + '</span></div>';
+    var g = groups[order[j]], f = g.items[0], times = [];
+    for (var k = 0; k < g.items.length; k++) times.push(mins(g.items[k]));
+    html += '<div class="row flex"><span class="line">' + esc(g.line) + '</span>' +
+            '<div class="grow"><div class="dir">' + esc(g.dir) + '</div>' +
+            '<div class="then">fährt in ' + times.join(', ') + ' min</div></div>' +
+            '<span class="num ' + state(f.leave) + '">' + (f.leave <= 0 ? 'los!' : (f.rt ? '' : '~') + f.leave + '<small> min</small>') + '</span></div>';
   }
   return html;
 }
 
 function draw() {
-  var html = '', srcs = [];
+  var now = new Date().getTime(), html = '', srcs = [];
   for (var i = 0; i < STOPS.length; i++) {
     var s = STOPS[i], c = raw[s.id];
-    if (c && c.deps) {
-      html += s.split ? renderSplit(s, c.deps) : renderRows(s, c.deps);
-      if (!contains(srcs, c.src)) srcs.push(c.src);
-    } else {
-      html += '<div class="stop">' + esc(s.name) + '</div>';
+    var stale = c && now - c.ts > 150000;   // älter als 2,5 Min.
+    html += '<div class="stop">' + esc(s.name) + ' · ' + s.walk + ' min Fußweg</div>';
+    if (errors[s.id] || stale) {
+      html += '<div class="note">' + (c ? 'Veraltet – Daten von ' + hhmm(c.ts) : 'Keine Verbindung') +
+              (errors[s.id] ? ' (' + esc(errors[s.id]) + ')' : '') + '</div>';
     }
-    if (errors[s.id]) {
-      html += '<div class="note">Keine Verbindung' + (c ? ' – Daten von ' + hhmm(c.ts) : '') +
-              ' (' + esc(errors[s.id]) + ')</div>';
+    if (c && c.deps) {
+      html += '<div' + (stale ? ' class="stale"' : '') + '>' + (s.dirs ? renderDirs(s, c.deps) : renderRows(s, c.deps)) + '</div>';
+      if (!contains(srcs, c.src)) srcs.push(c.src);
     }
   }
-  html += '<div class="upd">Stand ' + hhmm(new Date().getTime()) + (srcs.length ? ' · Quelle: ' + srcs.join(' + ') : '') +
-          ' · ~ = Fahrplanzeit ohne Echtzeit</div>' +
-          '<div class="upd"><a href="https://transitous.org/sources/">Datenquellen (Transitous)</a> · Kontakt: ' + esc(KONTAKT) + '</div>';
+  html += '<div class="upd">Stand ' + hhmm(now) + (srcs.length ? ' · ' + srcs.join(' + ') : '') +
+          ' · ~ = Fahrplan ohne Echtzeit · <a href="https://transitous.org/sources/">Datenquellen</a> · ' + esc(KONTAKT) + '</div>';
   document.getElementById('out').innerHTML = html;
 }
 
